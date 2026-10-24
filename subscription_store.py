@@ -92,6 +92,38 @@ def add(entry: Dict[str, Any]) -> bool:
     return True
 
 
+def move(sec_uid: str, delta: int) -> bool:
+    """在订阅列表里移动一位（delta<0 前移，>0 后移）。
+
+    列表顺序既是界面显示顺序，也是每日自动下载的执行顺序，
+    所以手动排序会影响先下载谁。
+    """
+    authors = load()
+    idx = next(
+        (i for i, a in enumerate(authors) if a.get("sec_uid") == sec_uid), -1
+    )
+    if idx < 0:
+        return False
+    new = idx + (1 if delta > 0 else -1)
+    if new < 0 or new >= len(authors):
+        return False
+    authors[idx], authors[new] = authors[new], authors[idx]
+    save(authors)
+    return True
+
+
+def count() -> int:
+    """订阅总数。"""
+    return len(load())
+
+
+def index_of(sec_uid: str) -> int:
+    """返回该订阅在列表中的位置（-1 = 不存在）。"""
+    return next(
+        (i for i, a in enumerate(load()) if a.get("sec_uid") == sec_uid), -1
+    )
+
+
 def remove(sec_uid: str) -> bool:
     authors = load()
     left = [a for a in authors if a.get("sec_uid") != sec_uid]
