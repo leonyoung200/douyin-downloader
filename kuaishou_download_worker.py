@@ -5,7 +5,7 @@
 
 由 gui_app.py 以子进程方式调用（exe 自带 playwright，无需用户另装 Python 环境）：
 
-    抖音批量下载器.exe --kdl <task.json>
+    抖快批量下载器.exe --kdl <task.json>
 
 task.json 字段：
     urls          快手作者主页链接列表（规范 /profile/<id> 形态）
