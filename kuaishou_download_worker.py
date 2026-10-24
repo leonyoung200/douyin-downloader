@@ -49,6 +49,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from browser_compat import ensure_browsers_path, launch_chromium  # noqa: E402
+from renumber_folders import strip_index as _strip_index  # noqa: E402
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
@@ -405,6 +406,19 @@ class KuaishouCrawler:
             + ("（文件名前加发布日期）" if self.date_folders else ""))
 
         total = len(works)
+        # ---- 已有文件索引（键 = 去掉编号前缀后的文件名小写）----
+        # 「重新编号」会给文件加 0001_ 这类前缀，直接 dest.exists() 匹配不到
+        # 已编号的旧文件，会导致同批作品重复下载；这里按去编号名建索引兜底。
+        existing: Dict[str, Path] = {}
+        try:
+            for p in author_dir.rglob("*"):
+                if p.is_file():
+                    existing.setdefault(
+                        _strip_index(p.stem).lower() + p.suffix.lower(), p
+                    )
+        except OSError:
+            pass
+
         # ---- 组装下载任务 ----
         jobs = []  # (kind, urls, dest, 标题)
         for feed_item in works:
@@ -447,6 +461,12 @@ class KuaishouCrawler:
         async def run_one(job):
             kind, urls, dest, title = job
             async with sem:
+                hit = existing.get(dest.name.lower())
+                if hit is not None and hit.stat().st_size > 0:
+                    self.stats["skip"] += 1
+                    log(f"    已存在，跳过：{hit.name}" + (
+                        f"（编号名 {dest.name}）" if hit.name != dest.name else ""))
+                    return
                 if dest.exists() and dest.stat().st_size > 0:
                     self.stats["skip"] += 1
                     log(f"    已存在，跳过：{dest.name}")
