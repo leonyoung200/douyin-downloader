@@ -300,9 +300,15 @@ async def main_async(args):
             else:
                 display.fail_url("下载失败或链接无效")
     finally:
-        display.stop_download_session()
+        try:
+            display.stop_download_session()
+        except Exception:  # 退出时控制台句柄可能失效，吞掉以免污染主流程
+            pass
         if database is not None:
-            await database.close()
+            try:
+                await database.close()
+            except Exception:
+                pass
         if quiet_progress_logs:
             set_console_log_level(logging.ERROR)
 
@@ -455,11 +461,20 @@ def main():
     try:
         asyncio.run(main_async(args))
     except KeyboardInterrupt:
-        display.print_warning("\nDownload interrupted by user")
+        try:
+            display.print_warning("\nDownload interrupted by user")
+        except Exception:
+            pass
         sys.exit(0)
     except Exception as e:
-        display.print_error(f"Fatal error: {e}")
-        logger.exception("Fatal error occurred")
+        try:
+            display.print_error(f"Fatal error: {e}")
+        except Exception:
+            pass
+        try:
+            logger.exception("Fatal error occurred")
+        except Exception:
+            pass
         sys.exit(1)
 
 

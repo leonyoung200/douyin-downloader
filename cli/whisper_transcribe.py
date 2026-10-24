@@ -24,7 +24,6 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -37,7 +36,15 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
-console = Console()
+try:
+    from cli.progress_display import make_safe_console
+except Exception:  # 独立运行（python cli/whisper_transcribe.py）时回退
+    from rich.console import Console
+
+    def make_safe_console():
+        return Console(legacy_windows=False)
+
+console = make_safe_console()
 
 # ── 颜色主题 (区别于 douyin-downloader 的 cyan/magenta) ──
 THEME = {
@@ -251,7 +258,12 @@ def extract_audio(video_path, audio_path, ffmpeg_path="ffmpeg"):
         "-loglevel",
         "error",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0,
+    )
     if result.returncode != 0:
         console.print(f"  [{THEME['error']}]ffmpeg错误: {result.stderr.strip()}[/]")
     return result.returncode == 0 and Path(audio_path).exists()

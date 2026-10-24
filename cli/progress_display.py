@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+import io
+import os
+import sys
+from typing import Any, Dict, Optional, Tuple
 
 from rich.console import Console
 from rich.progress import (
@@ -13,7 +16,102 @@ from rich.progress import (
 )
 from rich.table import Table
 
-console = Console()
+
+class _SafeStream:
+    """容错输出流：包裹真实 stdout/stderr，吞掉进程退出时句柄失效导致的写入/刷新异常。
+
+    背景：在 Windows 控制台（或 GUI 自调用 CLI 子进程）场景下，rich 关闭进度会话
+    （transient Progress 的 __exit__）会向控制台句柄 flush，此时若句柄已失效
+    （WinError 87 → errno 22 Invalid argument），``LegacyWindowsTerm.write_text`` 的
+    ``self.flush()`` 会抛 ``OSError: [Errno 22]``，进而把整个 CLI 下载任务崩成
+    PyInstaller 原生错误框。此包装器让任何 write/flush 失败都被静默吞掉，下载仍能
+    正常完成，异常不会污染主流程。
+    """
+
+    def __init__(self, stream: Any):
+        if stream is None:
+            try:
+                stream = open(os.devnull, "w", encoding="utf-8", errors="replace")
+            except Exception:
+                stream = None
+        self._stream = stream
+        self.encoding = (getattr(stream, "encoding", None) or "utf-8") or "utf-8"
+        self.errors = (getattr(stream, "errors", None) or "replace") or "replace"
+
+    def write(self, text):
+        if self._stream is None:
+            return None
+        try:
+            return self._stream.write(text)
+        except Exception:
+            return None
+
+    def flush(self):
+        if self._stream is None:
+            return
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        if self._stream is None:
+            return False
+        try:
+            return bool(self._stream.isatty())
+        except Exception:
+            return False
+
+    def fileno(self):
+        if self._stream is None:
+            raise OSError("no fileno")
+        try:
+            return self._stream.fileno()
+        except Exception as exc:  # noqa: BLE001 — 对 rich 暴露为 OSError，由它自行降级
+            raise OSError(str(exc))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def make_safe_console() -> Console:
+    """构造一个对 Windows 控制台崩溃免疫的 rich Console。
+
+    - 先把 stdout/stderr 固定为 UTF-8，避免 rich 输出 ``✓`` 等符号时因 GBK 编码抛错；
+    - 强制 ``legacy_windows=False``，彻底绕开 ``LegacyWindowsTerm`` 的 Win32 API 调用
+      （崩溃就发生在那条路径）；现代 Windows 控制台原生支持 VT 转义，渲染效果等价；
+    - 用 ``_SafeStream`` 包裹底层流，任何 write/flush 异常都被吞掉。
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        try:
+            if stream is None:
+                raise ValueError("no stream")
+            enc = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+            if enc != "utf8":
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            try:
+                buf = getattr(stream, "buffer", None) if stream is not None else None
+                if buf is not None:
+                    setattr(
+                        sys,
+                        name,
+                        io.TextIOWrapper(buf, encoding="utf-8", errors="replace"),
+                    )
+                else:
+                    setattr(
+                        sys,
+                        name,
+                        open(os.devnull, "w", encoding="utf-8", errors="replace"),
+                    )
+            except Exception:
+                pass
+
+    return Console(file=_SafeStream(sys.stdout), legacy_windows=False)
+
+
+console = make_safe_console()
 
 _REASON_STATUS_LABELS = {"skipped": "跳过", "failed": "失败"}
 
