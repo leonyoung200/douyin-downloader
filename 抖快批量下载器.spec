@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+datas = [('app_icon.ico', '.')]
 binaries = []
 hiddenimports = ['gmssl', 'aiosqlite', 'browser_compat', 'subscription_store', 'kuaishou_login_worker', 'kuaishou_download_worker', 'merge_folders', 'renumber_folders']
 tmp_ret = collect_all('PySide6')
@@ -40,6 +40,7 @@ exe = EXE(
     a.datas,
     [],
     name='抖快批量下载器',
+    icon='app_icon.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
