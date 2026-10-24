@@ -9,12 +9,13 @@
 
 task.json 字段：
     urls          快手作者主页链接列表（规范 /profile/<id> 形态）
-    save_dir      保存目录（文件落在 <save_dir>/<作者名>/[<发布日期>/] 下）
+    save_dir      保存目录（文件落在 <save_dir>/<作者名>/ 下）
     types         下载类型：video/cover/frame/music/avatar/json
     number        数量限制（0=全部）
     start_time    起始日期 YYYY-MM-DD（可空）
     end_time      截止日期 YYYY-MM-DD（可空）
-    date_folders  是否按发布日期建子文件夹（默认 true）
+    date_folders  是否把发布日期加在文件名前（如 2026-10-24_标题.mp4，默认 true；
+                  不建日期子文件夹，文件平铺在作者目录下）
     author_name   作者名覆盖（订阅场景由用户指定；为空则自动识别）
 
 实现要点（2026-10-24 实测）：
@@ -401,7 +402,7 @@ class KuaishouCrawler:
         author_dir = self.save_root / sanitize_name(author_name, "未知作者")
         author_dir.mkdir(parents=True, exist_ok=True)
         log(f"[KS] 保存目录：{author_dir}"
-            + ("（按发布日期分文件夹）" if self.date_folders else ""))
+            + ("（文件名前加发布日期）" if self.date_folders else ""))
 
         total = len(works)
         # ---- 组装下载任务 ----
@@ -409,20 +410,20 @@ class KuaishouCrawler:
         for feed_item in works:
             photo = feed_item.get("photo") or {}
             title = sanitize_name(photo.get("caption") or "", f"作品_{photo.get('id')}")
-            target_dir = author_dir
             if self.date_folders:
-                target_dir = author_dir / self._date_folder(photo.get("timestamp"))
-                target_dir.mkdir(parents=True, exist_ok=True)
+                stem = f"{self._date_folder(photo.get('timestamp'))}_{title}"
+            else:
+                stem = title
             if "video" in self.types:
                 jobs.append(("video", _pick_video_urls(photo),
-                             target_dir / f"{title}.mp4", title))
+                             author_dir / f"{stem}.mp4", title))
             if "cover" in self.types:
                 cover = photo.get("coverUrl") or ""
                 if cover:
                     jobs.append(("cover", [cover],
-                                 target_dir / f"{title}_cover.jpg", title))
+                                 author_dir / f"{stem}_cover.jpg", title))
             if "json" in self.types:
-                dest = target_dir / f"{title}.json"
+                dest = author_dir / f"{stem}.json"
                 if not dest.exists():
                     try:
                         dest.write_text(
