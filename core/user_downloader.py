@@ -551,6 +551,14 @@ class UserDownloader(BaseDownloader):
             return
 
         browser_cfg = self.config.get("browser_fallback", {}) or {}
+        # 登录态采集开关：匿名回补只能看到前 ~20 个作品，带上登录 cookie
+        # 才能拿到完整列表（browser_fallback.use_login_cookies）。
+        try:
+            self.api_client.browser_use_login_cookies = bool(
+                browser_cfg.get("use_login_cookies", False)
+            )
+        except Exception:
+            pass
         number_limit = self.config.get("number", {}).get("post", 0)
         # 在分页受限场景下，user_info.aweme_count 常常不可靠（经常只返回 20）
         # 媒体筛选需要先拿到详情才能判断，不能用原始 ID 数提前截断。

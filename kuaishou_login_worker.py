@@ -13,7 +13,13 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from app_paths import app_root  # noqa: E402
+
+# FROZEN（PyInstaller onefile）时 __file__ 指向 _MEI 临时解压目录，退出即删；
+# 快手登录态/浏览器配置必须落在 exe 所在目录才能持久化（见 app_paths 文档）。
+ROOT = app_root()
 sys.path.insert(0, str(ROOT))
 
 from browser_compat import ensure_browsers_path, launch_chromium  # noqa: E402

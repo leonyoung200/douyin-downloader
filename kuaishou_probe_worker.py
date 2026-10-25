@@ -21,7 +21,12 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from app_paths import app_root  # noqa: E402
+
+# FROZEN 时 __file__ 在 _MEI 临时目录，浏览器配置须落 exe 目录（见 app_paths 文档）。
+ROOT = app_root()
 sys.path.insert(0, str(ROOT))
 
 from browser_compat import ensure_browsers_path, launch_chromium  # noqa: E402

@@ -44,7 +44,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-ROOT = Path(__file__).resolve().parent
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from app_paths import app_root  # noqa: E402
+
+# FROZEN（PyInstaller onefile）时 __file__ 指向 _MEI 临时解压目录，退出即删；
+# 浏览器配置（.browser-profile）等数据必须落在 exe 所在目录（见 app_paths 文档）。
+ROOT = app_root()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

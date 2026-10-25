@@ -96,6 +96,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_scrolls": 240,
         "idle_rounds": 8,
         "wait_timeout_seconds": 600,
+        # 回补浏览器是否携带登录 cookie 滚动主页。False 时匿名视图只能
+        # 看到前 ~20 个作品（2026-10-24 实测）；True 可拿完整列表，但
+        # 抖音可能对账号风控，由用户自行权衡（GUI 设置页默认勾选）。
+        "use_login_cookies": False,
     },
     # 下载完成通知（可选）。providers 支持 bark / telegram / webhook。
     "notifications": {

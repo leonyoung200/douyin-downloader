@@ -23,6 +23,10 @@ pip-wheel-metadata/
 venv/
 env/
 
+# Package file
+/pack-staging/
+/build-uninstall/
+
 # OS files
 .DS_Store
 

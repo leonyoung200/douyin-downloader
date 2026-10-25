@@ -299,8 +299,13 @@ def test_browser_fallback_caps_warmup_wait(monkeypatch):
 
     assert ids == []
     # warmup should be capped instead of waiting full wait_timeout_seconds
-    # and scrolling should stop after idle rounds even when no id is found
-    assert page.wait_calls <= 30
+    # and scrolling should stop after idle rounds even when no id is found.
+    # 注意：每轮滚动后的"页面消化"等待已改为 250ms 轮询（最少 800ms、
+    # 最多 2500ms、安静 1000ms 结束本轮），单轮 wait 调用次数从 1 变成
+    # 最多 10 次；warmup 上限 20 次 + idle_rounds=3 轮 => 上限约 20+3*11=53。
+    # 阈值取 60：既能容忍轮询拆分，又远小于 max_scrolls=240 轮的量级，
+    # 仍然证明"没有跑满滚动轮数、idle 后即停"。
+    assert page.wait_calls <= 60
     stats = client.pop_browser_post_stats()
     assert stats["selected_ids"] == 0
     assert client.pop_browser_post_stats() == {}

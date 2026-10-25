@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('app_icon.ico', '.')]
 binaries = []
-hiddenimports = ['gmssl', 'aiosqlite', 'browser_compat', 'subscription_store', 'kuaishou_login_worker', 'kuaishou_download_worker', 'merge_folders', 'renumber_folders']
+hiddenimports = ['gmssl', 'aiosqlite', 'browser_compat', 'subscription_store', 'kuaishou_login_worker', 'kuaishou_download_worker', 'merge_folders', 'renumber_folders', 'app_paths']
 tmp_ret = collect_all('PySide6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('playwright')

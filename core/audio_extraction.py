@@ -11,11 +11,18 @@ from __future__ import annotations
 import asyncio
 import collections
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
 
 from utils.logger import setup_logger
+
+# Windows 上 GUI/无控制台进程 spawn ffmpeg（console 子系统）时会瞬间闪一个
+# 黑色控制台窗口（PyInstaller onefile 里标题显示为 _MEIxxxx\...ffmpeg.exe）。
+# CREATE_NO_WINDOW 让子进程不分配控制台，彻底消除闪烁。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 logger = setup_logger("AudioExtraction")
 
@@ -180,6 +187,7 @@ class FfmpegLocator:
                 "-version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=_NO_WINDOW,
             )
             stdout, _stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=_VERSION_PROBE_TIMEOUT_SECONDS
@@ -285,6 +293,7 @@ async def extract_audio(
         *args,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
+        creationflags=_NO_WINDOW,
     )
 
     # Bounded stderr capture — bytes from the tail of the stream

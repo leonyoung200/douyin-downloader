@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -25,6 +27,10 @@ logger = setup_logger("LiveReplayDownloader")
 LIVE_REPLAY_TIMEZONE = timezone(timedelta(hours=8))
 _REMUX_TIMEOUT_SECONDS = 600.0
 _PROCESS_REAP_TIMEOUT_SECONDS = 5.0
+
+# Windows 上无控制台进程 spawn ffmpeg（console 子系统）会闪黑色控制台窗口；
+# CREATE_NO_WINDOW 彻底消除（PyInstaller onefile 里标题显示 _MEIxxxx\ffmpeg.exe）。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 
 class LiveReplayDownloader(BaseDownloader):
@@ -255,6 +261,7 @@ class LiveReplayDownloader(BaseDownloader):
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=_NO_WINDOW,
             )
             _stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=_REMUX_TIMEOUT_SECONDS

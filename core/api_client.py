@@ -15,6 +15,12 @@ from urllib.parse import urlencode
 import aiohttp
 
 from auth import MsTokenManager
+try:
+    from browser_compat import launch_chromium
+except ImportError:  # 根目录不在 sys.path 时自行补齐（被打包/被当包导入时）
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from browser_compat import launch_chromium
+from app_paths import app_root  # noqa: E402 — 与 browser_compat 同目录，随之一同可导入
 from utils.cookie_utils import sanitize_cookies
 from utils.logger import safe_log_url, setup_logger
 from utils.xbogus import XBogus
@@ -305,6 +311,37 @@ def _is_argus_rejection(status: int, body_prefix: str) -> bool:
     return status == _ARGUS_REJECTION_STATUS and ARGUS_REJECTION_MARKER in body_prefix
 
 
+def _browser_profile_dir() -> Path:
+    """持久化浏览器配置目录（登录态保存在这里，采集/登录共用）。
+
+    位于应用根目录下 .browser-profile（源码版=仓库根目录；打包版=exe 所在目录，
+    由 app_paths.app_root 解析——不能用 __file__，frozen 时它在 _MEI 临时目录）。
+    用户在其中手动登录一次后，后续采集直接带登录态打开主页，不再弹登录/验证浮层。
+    """
+    return app_root() / ".browser-profile"
+
+
+# 登录/验证浮层检测脚本：抖音风控时会弹扫码登录或验证浮层，浮层存在期间
+# 页面滚动完全无效（2026-10-24 实测）。返回 None 表示无浮层。
+_LOGIN_MODAL_DETECT_JS = """() => {
+  if (document.querySelector('#animate_qrcode_container')) return 'qrcode';
+  const pattern = /扫码登录|登录抖音|手机号登录|一键登录|安全验证|滑动验证|验证码|登录后查看|登录后查看更多/;
+  const nodes = document.querySelectorAll('div, section, dialog');
+  for (const n of nodes) {
+    const text = (n.textContent || '');
+    if (text.length > 500) continue;
+    if (!pattern.test(text)) continue;
+    const r = n.getBoundingClientRect();
+    const cs = getComputedStyle(n);
+    const fixed = cs.position === 'fixed' || cs.position === 'absolute';
+    if (r.width > 240 && r.height > 160 && fixed) {
+      return text.trim().slice(0, 24);
+    }
+  }
+  return null;
+}"""
+
+
 def _log_api_response(
     path: str,
     attempt: int,
@@ -394,6 +431,10 @@ class DouyinAPIClient:
         self._ms_token_manager = MsTokenManager(user_agent=self.headers["User-Agent"])
         self._ms_token = (self.cookies.get("msToken") or "").strip()
         self._abogus_enabled = ABogus is not None and BrowserFingerprintGenerator is not None
+        # 回补浏览器是否携带登录 cookie。由 UserDownloader 按
+        # browser_fallback.use_login_cookies 配置注入；False 时
+        # _browser_cookie_payload 按 blocklist 过滤掉 sessionid 等。
+        self.browser_use_login_cookies = False
 
     async def __aenter__(self) -> "DouyinAPIClient":
         await self._ensure_session()
@@ -1765,7 +1806,7 @@ class DouyinAPIClient:
                         proxy = "socks5://" + proxy[len("socks5h://") :]
                     launch_options["proxy"] = {"server": proxy}
 
-                browser = await playwright.chromium.launch(**launch_options)
+                browser = await launch_chromium(playwright, **launch_options)
                 try:
                     context = await browser.new_context(
                         user_agent=self.headers.get("User-Agent", ""),
@@ -1921,24 +1962,63 @@ class DouyinAPIClient:
                 executable_path or "-",
                 bool(executable_path and os.path.exists(executable_path)),
             )
-            browser = await playwright.chromium.launch(
-                headless=headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--no-sandbox",
-                ],
+            # 持久化浏览器配置：用户在其中登录过一次后，采集浏览器直接以
+            # 已登录态打开主页，不再需要注入 cookie，也不会再弹登录/验证
+            # 浮层（浮层不消掉，页面滚动是完全无效的——2026-10-24 实测教训）。
+            profile_dir = _browser_profile_dir()
+            context = None
+            try:
+                profile_dir.mkdir(parents=True, exist_ok=True)
+                context = await launch_chromium(
+                    playwright,
+                    persistent=True,
+                    user_data_dir=str(profile_dir),
+                    headless=headless,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-dev-shm-usage",
+                        "--no-sandbox",
+                    ],
+                    locale="zh-CN",
+                    viewport={"width": 1600, "height": 900},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Persistent browser profile unavailable (%s); "
+                    "falling back to ephemeral context", exc,
+                )
+                context = None
+
+            if context is None:
+                browser = await launch_chromium(
+                    playwright,
+                    headless=headless,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-dev-shm-usage",
+                        "--no-sandbox",
+                    ],
+                )
+                context = await browser.new_context(
+                    user_agent=self.headers.get("User-Agent", ""),
+                    locale="zh-CN",
+                    viewport={"width": 1600, "height": 900},
+                )
+            else:
+                browser = None
+
+            # 持久化配置里已有登录态就不再注入 cookie（注入陈旧反爬 cookie
+            # 反而会触发风控浮层）；没有登录态时才注入。
+            existing = await context.cookies(self.BASE_URL)
+            has_session = any(
+                c.get("name") in {"sessionid", "sid_guard"} for c in existing
             )
-            context = await browser.new_context(
-                user_agent=self.headers.get("User-Agent", ""),
-                locale="zh-CN",
-                viewport={"width": 1600, "height": 900},
-            )
-            cookies = self._browser_cookie_payload()
+            cookies = [] if has_session else self._browser_cookie_payload()
             logger.info(
-                "Browser fallback context ready: cookie_count=%s cookie_names=%s",
+                "Browser fallback context ready: persistent=%s has_session=%s cookie_count=%s",
+                browser is None,
+                has_session,
                 len(cookies),
-                ",".join(sorted(str(cookie.get("name")) for cookie in cookies)) or "-",
             )
             if cookies:
                 await context.add_cookies(cookies)
@@ -2020,6 +2100,16 @@ class DouyinAPIClient:
                         except Exception as exc:
                             logger.warning("Reload user page after verification failed: %s", exc)
 
+                # 登录/验证浮层等待：浮层存在时页面滚动完全无效（实测滚轮
+                # 毫无反应），必须先等用户在浏览器里完成登录/验证。
+                if not await self._wait_until_page_ready(
+                    page, wait_timeout_seconds=wait_timeout_seconds
+                ):
+                    if page.is_closed():
+                        logger.warning("Browser page closed while waiting for login modal")
+                        return []
+                    logger.warning("Login/verify modal still present, continue anyway")
+
                 try:
                     warmup_seconds = min(20, max(3, int(wait_timeout_seconds)))
                     for _ in range(warmup_seconds):
@@ -2035,24 +2125,113 @@ class DouyinAPIClient:
                     max_scroll_rounds = max(1, int(max_scrolls))
                     idle_stop_rounds = max(1, int(idle_rounds))
 
-                    for _ in range(max_scroll_rounds):
+                    # 每轮滚动后给页面留足"消化"时间：抖音作品列表是懒加载 +
+                    # 异步翻页 API，滚完立刻判定有没有新内容，会把还在加载的
+                    # 后续页误判为结束（2026-10-24 用户实测：滚太快，网站
+                    # 没反应过来就结束，列表远没拿全）。策略：最少等
+                    # _SETTLE_MIN_MS，最多 _SETTLE_MAX_MS；期间每
+                    # _SETTLE_POLL_MS 轮询一次，有新内容就顺延重计安静
+                    # 时间；安静 _SETTLE_QUIET_MS 才认为本轮滚到底。
+                    _SETTLE_MIN_MS = 800
+                    _SETTLE_MAX_MS = 2500
+                    _SETTLE_POLL_MS = 250
+                    _SETTLE_QUIET_MS = 1000
+
+                    # 定位作品列表所在的主滚动容器。抖音主页 window 本身不
+                    # 滚动（bodyScrollH == innerH），内容装在
+                    # .route-scroll-container 等 div 里；早期版本直接在
+                    # (0,0) 处发 3800px 滚轮，实际滚到左侧导航栏，作品列表
+                    # 永远加载不出第二页（2026-10-24 实测：恒定 31 条）。
+                    scroll_target = None
+                    for sel in (
+                        "[class*='route-scroll-container']",
+                        "[class*='route-scroll']",
+                        "main",
+                        "body",
+                    ):
+                        try:
+                            loc = page.locator(sel).first
+                            if await loc.count():
+                                scroll_target = loc
+                                break
+                        except Exception:
+                            continue
+
+                    for scroll_round in range(max_scroll_rounds):
                         if page.is_closed():
                             logger.warning("Browser page closed during scrolling")
                             break
-                        await page.mouse.wheel(0, 3800)
-                        await page.wait_for_timeout(1200)
+                        try:
+                            # 1) 鼠标悬停到滚动容器中心，再发小步长滚轮
+                            #    （大幅跳滚会被懒加载器忽略）
+                            if scroll_target is not None:
+                                try:
+                                    box = await scroll_target.bounding_box()
+                                    if box:
+                                        await page.mouse.move(
+                                            box["x"] + box["width"] / 2,
+                                            box["y"] + min(box["height"] / 2, 400),
+                                        )
+                                except Exception:
+                                    pass
+                            await page.mouse.wheel(0, 600)
+                            # 2) 合成 wheel 事件 + 渐进 scrollTop，双保险
+                            await page.evaluate(
+                                """() => {
+                                    const sels = ["[class*='route-scroll-container']",
+                                                  "[class*='route-scroll']", "main"];
+                                    for (const sel of sels) {
+                                        document.querySelectorAll(sel).forEach(el => {
+                                            el.scrollTop += 600;
+                                            el.dispatchEvent(new WheelEvent("wheel", {
+                                                deltaY: 600, bubbles: true, cancelable: true,
+                                            }));
+                                        });
+                                    }
+                                    window.scrollBy(0, 600);
+                                }"""
+                            )
+                        except Exception:
+                            pass
 
-                        before = len(ids)
-                        _merge(await self._extract_aweme_ids_from_page(page))
-                        if len(ids) == before:
-                            stable_rounds += 1
-                        else:
+                        # 滚动中途也可能弹出登录/验证浮层（风控升级），
+                        # 出现就停下来等用户处理完再继续。
+                        if scroll_round % 5 == 4 and not await self._wait_until_page_ready(
+                            page, wait_timeout_seconds=60
+                        ):
+                            logger.warning("Login/verify modal appeared during scrolling")
+
+                        # 等这一滚被页面"消化"：轮询提取，有新 id 就顺延重计
+                        # 安静时间；等满上限或安静足够才结束本轮。
+                        waited_ms = 0
+                        quiet_ms = 0
+                        grew = False
+                        while waited_ms < _SETTLE_MAX_MS:
+                            await page.wait_for_timeout(_SETTLE_POLL_MS)
+                            waited_ms += _SETTLE_POLL_MS
+                            if page.is_closed():
+                                break
+                            before = len(ids)
+                            _merge(await self._extract_aweme_ids_from_page(page))
+                            if len(ids) > before:
+                                grew = True
+                                quiet_ms = 0
+                            else:
+                                quiet_ms += _SETTLE_POLL_MS
+                            if waited_ms >= _SETTLE_MIN_MS and quiet_ms >= _SETTLE_QUIET_MS:
+                                break
+
+                        if grew:
                             stable_rounds = 0
+                        else:
+                            stable_rounds += 1
 
                         if expected_count > 0 and len(ids) >= expected_count:
                             break
                         if expected_count <= 0 and stable_rounds >= idle_stop_rounds:
                             break
+                        # 轮与轮之间再缓一口，降低请求密度（风控友好）
+                        await page.wait_for_timeout(400)
                 except Exception as exc:
                     logger.warning(
                         "Browser collection interrupted, use collected ids so far: %s",
@@ -2066,8 +2245,15 @@ class DouyinAPIClient:
                     self._sync_browser_cookies(browser_cookies)
                 except Exception as exc:
                     logger.debug("Sync browser cookies skipped: %s", exc)
-                await context.close()
-                await browser.close()
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+                if browser is not None:
+                    try:
+                        await browser.close()
+                    except Exception:
+                        pass
 
         selected_ids: List[str] = []
         selected_seen: set[str] = set()
@@ -2107,10 +2293,14 @@ class DouyinAPIClient:
 
     def _browser_cookie_payload(self) -> List[Dict[str, str]]:
         payload: List[Dict[str, str]] = []
+        # use_login_cookies=True 时放开 blocklist：回补浏览器带登录态滚动
+        # 主页才能翻过匿名视图的前 ~20 条限制（2026-10-24 实测：匿名采集
+        # 453 个作品的博主只拿到 20 条）。默认仍过滤，保护账号。
+        use_login = bool(getattr(self, "browser_use_login_cookies", False))
         for name, value in self.cookies.items():
             if not name:
                 continue
-            if name in self._BROWSER_COOKIE_BLOCKLIST:
+            if not use_login and name in self._BROWSER_COOKIE_BLOCKLIST:
                 continue
             payload.append(
                 {
@@ -2179,6 +2369,37 @@ class DouyinAPIClient:
             await page.wait_for_timeout(1000)
 
         logger.warning("等待手动验证超时（%ss），继续按当前页面状态采集。", wait_timeout_seconds)
+
+    async def _wait_until_page_ready(self, page, *, wait_timeout_seconds: int) -> bool:
+        """等待登录/验证浮层消失。
+
+        抖音风控时会弹扫码登录或验证浮层；浮层存在期间页面滚动完全无效
+        （2026-10-24 实测：滚轮毫无反应，作品数恒定）。必须等用户在浏览器
+        里完成登录/验证，浮层消失后才继续采集。返回 True 表示页面就绪。
+        """
+        deadline = asyncio.get_running_loop().time() + max(30, int(wait_timeout_seconds))
+        announced = False
+        while asyncio.get_running_loop().time() < deadline:
+            if page.is_closed():
+                return False
+            blocked = None
+            try:
+                blocked = await page.evaluate(_LOGIN_MODAL_DETECT_JS)
+            except Exception:
+                return True  # 页面都 evaluate 不了，别卡住采集
+            if not blocked:
+                if announced:
+                    logger.warning("登录/验证浮层已消失，继续采集。")
+                return True
+            if not announced:
+                announced = True
+                logger.warning(
+                    "检测到登录/验证浮层（%s），请在浏览器窗口中手动完成，"
+                    "程序会自动继续采集…", blocked,
+                )
+            await page.wait_for_timeout(2000)
+        logger.warning("等待登录/验证浮层消失超时（%ss）。", wait_timeout_seconds)
+        return False
 
     def _sync_browser_cookies(self, browser_cookies: List[Dict[str, Any]]) -> None:
         merged: Dict[str, str] = {}
